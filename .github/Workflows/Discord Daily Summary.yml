@@ -1,0 +1,350 @@
+# Name of the workflow
+name: Discord Daily Summary
+
+# Define when the workflow will run
+on:
+  # Schedule to run daily at 12:30 PM UTC on weekdays (Monday-Friday)
+  schedule:
+    - cron: '30 12 * * 1-5'
+  # Allow manual triggering of the workflow from the GitHub Actions UI
+  workflow_dispatch:
+
+# Define permissions for the workflow
+permissions:
+  # Allows the workflow to read issues
+  issues: read
+  # Allows the workflow to read pull requests (though not explicitly used in the current code)
+  pull-requests: read
+  # Allows the workflow to write to the repository (used to update the last run timestamp file)
+  contents: write
+
+# Define the jobs that will run as part of the workflow
+jobs:
+  # Job to send the daily summary to Discord
+  send-daily-summary:
+    # Specifies the type of runner to use for this job
+    runs-on: ubuntu-latest
+    # Defines the sequence of steps to be executed in this job
+    steps:
+      # Step to checkout the repository code to the runner
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # Step to set up the Python environment
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          # Specifies the Python version to use
+          python-version: '3.x'
+
+      # Step to install the required Python dependencies
+      - name: Install Python Dependencies
+        run: |
+          pip install pytz requests
+
+      # Step to process GitHub data and send a summary to Discord
+      - name: Process GitHub Data and Send to Discord
+        # Define environment variables that will be available in the script
+        env:
+          # GitHub token for API authentication, automatically provided by GitHub Actions
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Discord webhook URL, stored as a secret in GitHub
+          DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
+          # The repository name in the format owner/repo
+          REPO: ${{ github.repository }}
+        # Inline Python script to be executed
+        run: |
+          python - <<'EOL'
+          import datetime
+          import pytz
+          import requests
+          import os
+          import json
+          import re
+
+          # Function to extract the priority of an issue from its body
+          def extract_priority_from_body(body):
+            if not body:
+              return "No Priority"
+
+            try:
+              # Attempt to parse the body as JSON (for issues created using GitHub Forms)
+              body_json = json.loads(body)
+              # The field ID for the priority in the GitHub Form
+              field_id = "PVTSSF_lAHOBjEQUc4AqgNIzghvWcI"
+              if field_id in body_json:
+                priority = body_json[field_id]
+                if priority in ["Low Priority", "Medium Priority", "High Priority"]:
+                  return priority
+            except json.JSONDecodeError:
+              # If the body is not JSON, try to find the priority using a regex pattern
+              priority_pattern = r'### Priority\s*\n\n(High|Medium|Low)'
+              match = re.search(priority_pattern, body)
+              if match:
+                return f"{match.group(1)} Priority"
+
+            return "No Priority"
+
+          # Function to get details of a specific GitHub issue
+          def get_issue_details(issue_number):
+            repo = os.environ['REPO']
+            url = f'https://api.github.com/repos/{repo}/issues/{issue_number}'
+            headers = {
+              'Authorization': f'token {os.environ["GITHUB_TOKEN"]}',
+              'Accept': 'application/vnd.github.v3+json'
+            }
+            response = requests.get(url, headers=headers)
+            if response.status_code == 200:
+              issue_data = response.json()
+              priority = extract_priority_from_body(issue_data.get('body', ''))
+              return {
+                'number': issue_data['number'],
+                'title': issue_data['title'],
+                'priority': priority
+              }
+            return None
+
+          # File to store the timestamp of the last successful run
+          LAST_RUN_FILE = '.github/last-run-timestamp.txt'
+          # Timezone to display the last run time in
+          DISPLAY_TIMEZONE = 'Etc/GMT-1'  # Represents GMT+1
+
+          # Get the current time in UTC
+          now = datetime.datetime.now(pytz.UTC)
+          # Format the current time and include the user's login for tracking
+          now_str = f"Current Date and Time (UTC -<ctrl98>-MM-DD HH:MM:SS formatted): {now.strftime('%Y-%m-%d %H:%M:%S')}\nCurrent User's Login: seresben"
+
+          try:
+            # Try to read the timestamp of the last run from the file
+            with open(LAST_RUN_FILE, 'r') as f:
+              last_run_str = f.read().strip()
+              # Extract the timestamp using regex
+              date_match = re.search(r'Current Date and Time \(UTC -<ctrl98>-MM-DD HH:MM:SS formatted\): (.*?)\n', last_run_str)
+              if date_match:
+                last_check = datetime.datetime.strptime(
+                  date_match.group(1),
+                  '%Y-%m-%d %H:%M:%S'
+                ).replace(tzinfo=pytz.UTC)
+              else:
+                raise ValueError("Invalid timestamp format")
+          except (FileNotFoundError, ValueError) as e:
+            # If the file doesn't exist or the format is invalid, default to checking the last 24 hours
+            last_check = now - datetime.timedelta(hours=24)
+            last_run_str = f"Current Date and Time (UTC -<ctrl98>-MM-DD HH:MM:SS formatted): {last_check.strftime('%Y-%m-%d %H:%M:%S')}\nCurrent User's Login: seresben"
+
+          # Time to search for updates since the last check
+          search_time = last_check
+          # Format the search time for the GitHub API
+          search_time_str = search_time.strftime('%Y-%m-%dT%H:%M:%SZ')
+
+          github_token = os.environ['GITHUB_TOKEN']
+          repo = os.environ['REPO']
+
+          headers = {
+            'Authorization': f'token {github_token}',
+            'Accept': 'application/vnd.github.v3+json'
+          }
+
+          opened_issues = []
+          closed_issues = []
+          reopened_issues = []
+          commented_issues = set()
+
+          # Query to search for issues updated after the last check
+          query = f'repo:{repo} is:issue updated:>{search_time_str}'
+          response = requests.get(
+            'https://api.github.com/search/issues',
+            headers=headers,
+            params={
+              'q': query,
+              'sort': 'updated',
+              'order': 'desc',
+              'per_page': 100
+            }
+          )
+
+          if response.status_code == 200:
+            issues_data = response.json()
+
+            for issue in issues_data.get('items', []):
+              issue_number = issue['number']
+
+              # Get detailed information about the issue, including priority
+              issue_details = get_issue_details(issue_number)
+              if not issue_details:
+                continue
+
+              # Convert the created_at timestamp to a datetime object
+              created_at = datetime.datetime.strptime(
+                issue['created_at'],
+                '%Y-%m-%dT%H:%M:%SZ'
+              ).replace(tzinfo=pytz.UTC)
+
+              # If the issue was created after the last check, consider it an opened issue
+              if created_at > search_time:
+                opened_issues.append(issue_details)
+
+              # Fetch the timeline events for the issue to detect closed, commented, and reopened events
+              timeline_url = f'https://api.github.com/repos/{repo}/issues/{issue_number}/timeline'
+              timeline_response = requests.get(
+                timeline_url,
+                headers={**headers, 'Accept': 'application/vnd.github.mockingbird-preview+json'}
+              )
+
+              if timeline_response.status_code == 200:
+                events = timeline_response.json()
+
+                for event in events:
+                  if 'created_at' not in event:
+                    continue
+
+                  event_date = datetime.datetime.strptime(
+                    event['created_at'],
+                    '%Y-%m-%dT%H:%M:%SZ'
+                  ).replace(tzinfo=pytz.UTC)
+
+                  # Check if the event occurred after the last check
+                  if event_date > search_time:
+                    event_type = event.get('event')
+
+                    if event_type == 'closed':
+                      closed_issues.append(issue_details)
+                    elif event_type == 'commented':
+                      commented_issues.add(issue_number)
+                    elif event_type == 'reopened':
+                      reopened_issues.append(issue_details)
+
+          # If there are any updates, format the message for Discord
+          if opened_issues or closed_issues or reopened_issues or commented_issues:
+            message_parts = []
+
+            # Convert the last check time to the display timezone (GMT+1)
+            last_check_gmt1 = last_check.astimezone(pytz.timezone(DISPLAY_TIMEZONE))
+            formatted_time = last_check_gmt1.strftime('%Y-%m-%d %H:%M:%S')
+            message_parts.append(f"__Updates since {formatted_time} GMT+1__\n")
+
+            # Function to format a single issue line for the Discord message
+            def format_issue_line(number, title, priority, repo, comment=None):
+              issue_url = f"https://github.com/{repo}/issues/{number}"
+              if comment is not None:
+                return f"[#{number}]({issue_url}): {title}\nComment: {comment}"
+              return f"[#{number}]({issue_url}): {title}\nPriority: {priority}"
+
+            # Format and add reopened issues to the message
+            if reopened_issues:
+              message_parts.append("**Reopened Issues**")
+              for i, issue in enumerate(reopened_issues):
+                message_parts.append(format_issue_line(
+                  issue['number'],
+                  issue['title'],
+                  issue['priority'],
+                  repo
+                ))
+                if i < len(reopened_issues) - 1:  # Add a separator if not the last issue
+                  message_parts.append("─────────────────────")
+              if opened_issues or closed_issues or commented_issues:
+                message_parts.append("")
+
+            # Format and add newly opened issues to the message
+            if opened_issues:
+              message_parts.append("**Opened Issues**")
+              for i, issue in enumerate(opened_issues):
+                message_parts.append(format_issue_line(
+                  issue['number'],
+                  issue['title'],
+                  issue['priority'],
+                  repo
+                ))
+                if i < len(opened_issues) - 1:  # Add a separator if not the last issue
+                  message_parts.append("─────────────────────")
+              if closed_issues or commented_issues:
+                message_parts.append("")
+
+            # Format and add newly closed issues to the message
+            if closed_issues:
+              message_parts.append("**Closed Issues**")
+              for i, issue in enumerate(closed_issues):
+                message_parts.append(format_issue_line(
+                  issue['number'],
+                  issue['title'],
+                  issue['priority'],
+                  repo
+                ))
+                if i < len(closed_issues) - 1:  # Add a separator if not the last issue
+                  message_parts.append("─────────────────────")
+              if commented_issues:
+                message_parts.append("")
+
+            # Format and add issues with new comments to the message
+            if commented_issues:
+              message_parts.append("**New Comments**")
+              for i, issue_number in enumerate(commented_issues):
+                comments_url = f'https://api.github.com/repos/{repo}/issues/{issue_number}/comments'
+                comments_response = requests.get(comments_url, headers=headers)
+                if comments_response.status_code == 200:
+                  comments = comments_response.json()
+                  # Filter comments that are newer than the last check
+                  new_comments = [
+                    comment for comment in comments
+                    if datetime.datetime.strptime(
+                      comment['created_at'],
+                      '%Y-%m-%dT%H:%M:%SZ'
+                    ).replace(tzinfo=pytz.UTC) > search_time
+                  ]
+
+                  if new_comments:
+                    issue_details = get_issue_details(issue_number)
+                    if issue_details:
+                      # Show issue header
+                      message_parts.append(format_issue_line(
+                        issue_details['number'],
+                        issue_details['title'],
+                        issue_details['priority'],
+                        repo
+                      ))
+
+                      # Add each new comment under the issue (truncated if too long)
+                      for comment in new_comments:
+                        comment_body = comment['body']
+                        if len(comment_body) > 100:
+                          comment_body = comment_body[:97] + "..."
+                        message_parts.append(f"> {comment_body}")
+
+                      if i < len(commented_issues) - 1:
+                        message_parts.append("─────────────────────")
+
+            # Join all parts of the message
+            message = "\n".join(message_parts)
+
+            # Truncate the message if it exceeds Discord's limit
+            if len(message) > 1900:
+              message = message[:1900] + "..."
+
+            # Send the message to the Discord webhook
+            response = requests.post(
+              os.environ['DISCORD_WEBHOOK'],
+              json={"content": message},
+              headers={'Content-Type': 'application/json'}
+            )
+
+            # Check if sending to Discord was successful
+            if response.status_code != 204:
+              print(f"Error sending to Discord: {response.status_code}")
+              exit(1)
+
+          # Create the directory for the last run file if it doesn't exist
+          os.makedirs(os.path.dirname(LAST_RUN_FILE), exist_ok=True)
+          # Write the current timestamp to the last run file
+          with open(LAST_RUN_FILE, 'w') as f:
+            f.write(now_str)
+
+          # Configure git user for committing the last run timestamp
+          os.system('git config --global user.email "github-actions[bot]@users.noreply.github.com"')
+          os.system('git config --global user.name "github-actions[bot]"')
+          # Add the updated last run timestamp file to the commit
+          os.system('git add ' + LAST_RUN_FILE)
+          # Commit the changes with a message to skip CI for this commit
+          os.system('git commit -m "Update last run timestamp [skip ci]"')
+          # Push the changes to the repository
+          os.system('git push')
+          EOL

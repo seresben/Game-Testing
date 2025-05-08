@@ -1,0 +1,42 @@
+name: Bug Template
+description: Bug found during the test phase
+body:
+  - type: dropdown
+    id: priority
+    attributes:
+      label: Priority
+      description: Select the priority level of this bug
+      options:
+        - High
+        - Medium
+        - Low
+    validations:
+      required: true
+  - type: textarea
+    id: description
+    attributes:
+      label: Bug Description
+    validations:
+      required: true
+  - type: textarea
+    id: stepsToReproduce
+    attributes:
+      label: Steps to Reproduce
+    validations:
+      required: true
+  - type: input
+    id: expectedResult
+    attributes:
+      label: Expected Result
+    validations:
+      required: true
+  - type: input
+    id: actualResult
+    attributes:
+      label: Actual Result
+    validations:
+      required: true
+  - type: textarea
+    id: attachments
+    attributes:
+      label: Attachments

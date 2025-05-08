@@ -1,0 +1,16 @@
+Setup steps
+
+Set up Secrets:
+
+Go to your repo's "Settings" -> "Secrets and variables" -> "Actions".
+Add a new secret named DISCORD_WEBHOOK with your Discord webhook URL (for discord-daily-summary.yml).
+Add a new secret named PROJECT_TOKEN with a personal access token that has the project scope (for set-issue-priority.yml).
+
+Configure GitHub Project:
+
+Project Number: In set-issue-priority.yml, ensure projectV2(number: 5) uses the correct number of your target GitHub Project.
+
+Priority Field ID: In the github-script of set-issue-priority.yml, replace "PVTSSF_lAHOBjEQUc4AqgNIzghvWcI" with the actual Field ID of your "Priority" single-select field in your project. Find this in the project settings URL when editing the field. You can also fetch this from your browser's developer tools (DevTools), often in the "Network" or "Elements" tab when inspecting the field's properties.
+
+Priority Option IDs: In the priority
+Map within the github-script, replace the example IDs ('0a877460', 'da944a9c', '9b91cb3d') with the actual Option IDs for "High", "Medium", and "Low" in your project. You can find these by inspecting the page source or network requests in your browser's DevTools when editing the priority field options. Look for value attributes in <select> or <option> elements, or inspect the data sent in network requests.

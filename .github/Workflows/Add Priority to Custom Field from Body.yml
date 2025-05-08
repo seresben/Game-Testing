@@ -1,0 +1,163 @@
+# Name of the workflow
+name: Set Issue Priority Field
+
+# Define when the workflow will run
+on:
+  # Triggered when an issue is opened or edited
+  issues:
+    types: [opened, edited]
+  # Allows manual triggering of the workflow from the GitHub Actions UI
+  workflow_dispatch:
+    inputs:
+      issue_number:
+        description: 'Issue number to update'
+        required: true
+        type: string
+
+# Define the jobs that will run as part of the workflow
+jobs:
+  # Job to set the priority field of an issue in a GitHub Project
+  set_priority:
+    # Specifies the type of runner to use for this job
+    runs-on: ubuntu-latest
+    # Define permissions for the workflow
+    permissions:
+      # Allows the workflow to write to issues
+      issues: write
+      # Allows the workflow to write to repository projects
+      repository-projects: write
+    # Defines the sequence of steps to be executed in this job
+    steps:
+      # Uses the GitHub Script action to run custom JavaScript code
+      - uses: actions/github-script@v6
+        with:
+          # The GitHub token with the necessary permissions
+          github-token: ${{ secrets.PROJECT_TOKEN }}
+          # The JavaScript code to be executed
+          script: |
+            // Check if the workflow was triggered manually
+            const isManualTrigger = context.eventName === 'workflow_dispatch';
+            let issueNumber;
+            let issueBody;
+
+            // Determine the issue number and body based on the trigger event
+            if (isManualTrigger) {
+              // If triggered manually, get the issue details using the provided issue number
+              const issueData = await github.rest.issues.get({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: parseInt(context.payload.inputs.issue_number)
+              });
+              issueNumber = issueData.data.number;
+              issueBody = issueData.data.body;
+            } else {
+              // If triggered by an issue event (opened or edited), get the issue number and body from the payload
+              issueNumber = context.payload.issue.number;
+              issueBody = context.payload.issue.body;
+            }
+
+            // Regular expression to find the priority field in the issue body
+            const priorityMatch = issueBody.match(/### Priority\s*\n\n([^\n]*)/);
+            // If no priority field is found, log a message and exit
+            if (!priorityMatch) {
+              console.log('No priority field found in issue');
+              return;
+            }
+
+            // Extract the priority value and trim any whitespace
+            const priority = priorityMatch[1].trim();
+            console.log(`Processing issue #${issueNumber} with priority: ${priority}`);
+
+            // Initialize variables for fetching project items
+            let items = [];
+            let afterCursor = null;
+            let project = null;
+
+            // Loop to fetch all items in the specified GitHub Project
+            while (true) {
+              // GraphQL query to get items from the project
+              const projectQuery = `
+                query($afterCursor: String) {
+                  user(login: "seresben") {
+                    projectV2(number: 5) {
+                      id
+                      items(first: 100, after: $afterCursor) {
+                        nodes {
+                          id
+                          content {
+                            ... on Issue {
+                              number
+                            }
+                          }
+                        }
+                        pageInfo {
+                          hasNextPage
+                          endCursor
+                        }
+                      }
+                    }
+                  }
+                }
+              `;
+
+              // Execute the GraphQL query
+              const result = await github.graphql(projectQuery, { afterCursor: afterCursor });
+              project = result.user.projectV2;
+              const currentItems = project.items.nodes;
+              items = items.concat(currentItems);
+
+              // Break the loop if there are no more pages
+              if (!project.items.pageInfo.hasNextPage) {
+                break;
+              }
+
+              // Set the cursor for the next page
+              afterCursor = project.items.pageInfo.endCursor;
+            }
+
+            // Find the project item corresponding to the current issue
+            const item = items.find(item => item.content?.number === issueNumber);
+
+            // If the issue is not found in the project, log a message and exit
+            if (!item) {
+              console.log(`Issue #${issueNumber} not found in project`);
+              return;
+            }
+
+            // GraphQL mutation to update the project item's field value
+            const updateMutation = `
+              mutation($projectId: ID!, $itemId: ID!, $fieldId: ID!, $optionId: String!) {
+                updateProjectV2ItemFieldValue(
+                  input: {
+                    projectId: $projectId
+                    itemId: $itemId
+                    fieldId: $fieldId
+                    value: { singleSelectOptionId: $optionId }
+                  }
+                ) {
+                  projectV2Item {
+                    id
+                  }
+                }
+              }
+            `;
+
+            // The ID of the Priority field in the GitHub Project (Corrected Value)
+            const fieldId = "PVTSSF_lAHOBjEQUc4AqgNIzghvWcI";
+            // Mapping of priority text to the corresponding option IDs in the project
+            const priorityMap = {
+              'High': '0a877460',
+              'Medium': 'da944a9c',
+              'Low': '9b91cb3d'
+            };
+
+            // Execute the GraphQL mutation to update the priority field
+            await github.graphql(updateMutation, {
+              projectId: project.id,
+              itemId: item.id,
+              fieldId: fieldId,
+              optionId: priorityMap[priority]
+            });
+
+            // Log a success message
+            console.log(`Successfully updated priority for issue #${issueNumber}`);

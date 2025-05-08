@@ -1,0 +1,10 @@
+1.  Bug Reporting: A tester finds a bug and clicks "New issue", selecting the "Bug Template". They fill out the form, including selecting a "Priority" from the dropdown (e.g., "High").
+2.  Issue Creation: When the tester submits the issue, the issue body will contain the information they entered.
+3.  Automatic Priority Setting: The `set-issue-priority.yml` workflow is triggered because a new issue was opened. It reads the issue body, finds the "### Priority" section, and automatically updates the "Priority" field of that issue on your GitHub Project board to "High".
+4.  Daily Discord Update: The next time the `discord-daily-summary.yml` workflow runs (or if triggered manually), it will see the newly created bug issue (and any other issue update). It will then post a summary of this new bug (title, link, maybe priority if you configured the script to include it) to your team's Discord channel.
+
+Benefit of This Setup:
+
+-   Structured Bug Report: The template ensures consistent and complete information for each bug.
+-   Automated Project Update: The priority of the bug is automatically reflected in your project board, saving manual effort.
+-   Team Awareness: The Discord summary keeps the team informed about new bugs and other issue activity without needing to constantly monitor GitHub.
